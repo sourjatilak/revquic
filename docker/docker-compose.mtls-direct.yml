@@ -1,0 +1,55 @@
+# mTLS control plane + direct (P2P) data path over mTLS. Verifies the exit's direct QUIC listener
+# uses a CA-signed node cert and the client verifies it (no-SNI) while presenting its client cert.
+#   docker compose -f docker-compose.yml -f docker-compose.mtls-direct.yml up --build \
+#       --abort-on-container-exit --exit-code-from client
+services:
+  certgen:
+    build:
+      context: ..
+      dockerfile: docker/certgen/Dockerfile
+    command: ["-out", "/certs", "-broker-san", "server,localhost,broker"]
+    volumes: ["certs:/certs"]
+    networks: [revquic]
+
+  server:
+    command: ["-quic", ":4242", "-http", ":8080",
+              "-admin-token", "admin-secret", "-node-token", "node-secret",
+              "-seed-user", "alice-token:us-west",
+              "-tls-ca", "/certs/ca.pem", "-tls-cert", "/certs/broker-cert.pem", "-tls-key", "/certs/broker-key.pem"]
+    volumes: ["certs:/certs:ro"]
+    depends_on:
+      certgen:
+        condition: service_completed_successfully
+
+  exit:
+    command: ["-broker", "server:4242", "-nodeId", "exit-1", "-region", "us-west",
+              "-uplink", "eth0", "-token", "node-secret", "-direct",
+              "-tls-ca", "/certs/ca.pem", "-tls-cert", "/certs/node-cert.pem", "-tls-key", "/certs/node-key.pem",
+              "-tls-server-name", "server"]
+    volumes: ["certs:/certs:ro"]
+    depends_on:
+      certgen:
+        condition: service_completed_successfully
+      server:
+        condition: service_started
+
+  client:
+    environment:
+      BROKER: "server:4242"
+      ADMIN: "server:8080"
+      REGION: "us-west"
+      TOKEN: "alice-token"
+      ADMIN_TOKEN: "admin-secret"
+      DIRECT: "1"
+      DIRECT_EXPECT: "1"
+      TLS_CA: "/certs/ca.pem"
+      TLS_CERT: "/certs/client-cert.pem"
+      TLS_KEY: "/certs/client-key.pem"
+      TLS_SERVER_NAME: "server"
+    volumes: ["certs:/certs:ro"]
+    depends_on:
+      certgen:
+        condition: service_completed_successfully
+
+volumes:
+  certs: {}

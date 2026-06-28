@@ -1,0 +1,409 @@
+openapi: 3.1.0
+info:
+  title: Revquic Broker Admin API
+  version: 0.1.0
+  description: |
+    Management-plane API for the Revquic broker (B). Backs the admin web UI: user management
+    (CRUD + per-user region assignment) and real-time device (C exit node) management.
+
+    Live presence (`NodeConnected`/`NodeDisconnected`/`SessionStarted`/...) is delivered over the
+    `GET /events` stream (Server-Sent Events; a WebSocket variant MAY be offered at the same path).
+    See spec/admin-web-ui.md for the design rationale.
+
+    Conventions:
+    - All endpoints require a Bearer admin token (separate from VPN-user auth) except `POST /admin/login`.
+    - Exit nodes and sessions are LIVE/ephemeral (in-memory registry); users are PERSISTED.
+servers:
+  - url: https://{brokerHost}/api/v1
+    variables:
+      brokerHost:
+        default: broker.internal.example.com
+        description: Management interface host (MUST NOT be the public VPN/QUIC port).
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: auth
+  - name: users
+  - name: regions
+  - name: nodes
+  - name: sessions
+  - name: events
+
+paths:
+  /admin/login:
+    post:
+      tags: [auth]
+      summary: Authenticate an administrator
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string, format: password }
+      responses:
+        '200':
+          description: Admin session token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  expiresAt: { type: string, format: date-time }
+                  role: { $ref: '#/components/schemas/AdminRole' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /users:
+    get:
+      tags: [users]
+      summary: List VPN users
+      parameters:
+        - { name: region, in: query, schema: { type: string }, description: Filter to users allowed in this region }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/UserStatus' } }
+        - { name: q, in: query, schema: { type: string }, description: Username search }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
+      responses:
+        '200':
+          description: Paginated users
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [users]
+      summary: Create a VPN user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserCreate' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /users/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/UserId' }
+    get:
+      tags: [users]
+      summary: Get a user (with active sessions)
+      responses:
+        '200':
+          description: User detail
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/User'
+                  - type: object
+                    properties:
+                      activeSessions:
+                        type: array
+                        items: { $ref: '#/components/schemas/Session' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [users]
+      summary: Update a user (region assignment, status, credential)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserUpdate' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+    delete:
+      tags: [users]
+      summary: Delete a user (revokes active sessions)
+      responses:
+        '204': { description: Deleted; live sessions revoked }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /regions:
+    get:
+      tags: [regions]
+      summary: List regions with live counts
+      responses:
+        '200':
+          description: Regions
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Region' }
+
+  /nodes:
+    get:
+      tags: [nodes]
+      summary: List exit nodes (live device views)
+      parameters:
+        - { name: region, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/NodeStatus' } }
+      responses:
+        '200':
+          description: Live exit nodes
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/DeviceView' }
+
+  /nodes/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [nodes]
+      summary: Get exit node detail (config + connected sessions)
+      responses:
+        '200':
+          description: Node detail
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/DeviceView'
+                  - type: object
+                    properties:
+                      sessions:
+                        type: array
+                        items: { $ref: '#/components/schemas/Session' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /nodes/{id}/drain:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [nodes]
+      summary: Stop routing new sessions to a node (graceful drain)
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                drain: { type: boolean, default: true, description: false re-enables the node }
+      responses:
+        '200':
+          description: Updated node state
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeviceView' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /sessions:
+    get:
+      tags: [sessions]
+      summary: List active sessions
+      parameters:
+        - { name: nodeId, in: query, schema: { type: string } }
+        - { name: userId, in: query, schema: { type: string } }
+        - { name: region, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Active sessions
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Session' }
+
+  /events:
+    get:
+      tags: [events]
+      summary: Real-time presence/metrics feed (Server-Sent Events)
+      description: |
+        Returns `text/event-stream`. The first event is a `Snapshot`; subsequent events are deltas.
+        Each SSE `data:` line is one `Event` JSON object. A WebSocket variant MAY be served at this
+        same path (negotiated via the `Upgrade` header) carrying identical `Event` payloads.
+      responses:
+        '200':
+          description: SSE stream of Event objects
+          content:
+            text/event-stream:
+              schema: { $ref: '#/components/schemas/Event' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    Page:
+      { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+    PageSize:
+      { name: pageSize, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+    UserId:
+      { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+
+  responses:
+    Unauthorized:
+      description: Missing/invalid admin token
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    NotFound:
+      description: Resource not found
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Conflict:
+      description: Duplicate (e.g., username already exists)
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    ValidationError:
+      description: Invalid input
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  schemas:
+    AdminRole:
+      type: string
+      enum: [admin, readonly]
+    UserStatus:
+      type: string
+      enum: [enabled, disabled]
+    NodeStatus:
+      type: string
+      enum: [online, draining, down]
+    NATType:
+      type: string
+      enum: [full-cone, restricted-cone, port-restricted, symmetric, unknown]
+
+    User:
+      type: object
+      required: [id, username, allowedRegions, status]
+      properties:
+        id: { type: string, format: uuid }
+        username: { type: string }
+        allowedRegions:
+          type: array
+          description: 'Region codes the user may connect to. ["*"] = any; [] = none.'
+          items: { type: string }
+        status: { $ref: '#/components/schemas/UserStatus' }
+        activeSessionCount: { type: integer, readOnly: true }
+        createdAt: { type: string, format: date-time, readOnly: true }
+        updatedAt: { type: string, format: date-time, readOnly: true }
+
+    UserCreate:
+      type: object
+      required: [username, credential, allowedRegions]
+      properties:
+        username: { type: string }
+        credential:
+          type: string
+          description: Initial password or certificate fingerprint; stored hashed/by-reference, never raw.
+        allowedRegions:
+          type: array
+          items: { type: string }
+        status: { $ref: '#/components/schemas/UserStatus' }
+
+    UserUpdate:
+      type: object
+      description: All fields optional; only provided fields are changed.
+      properties:
+        allowedRegions:
+          type: array
+          items: { type: string }
+        status: { $ref: '#/components/schemas/UserStatus' }
+        credential: { type: string }
+
+    Region:
+      type: object
+      properties:
+        code: { type: string, example: us-west }
+        name: { type: string, example: US West }
+        nodeCount: { type: integer }
+        onlineNodes: { type: integer }
+        activeUsers: { type: integer }
+
+    DeviceConfigSummary:
+      type: object
+      properties:
+        region: { type: string }
+        capacity: { type: integer }
+        vpnType: { type: string, enum: [quic-datagram, openvpn, wireguard] }
+        dataplaneMode: { type: string, enum: [direct, relay, both] }
+        uplinkIface: { type: string }
+        version: { type: string }
+
+    DeviceView:
+      type: object
+      description: Live, derived view of a connected exit node (not persisted).
+      required: [nodeId, region, status]
+      properties:
+        nodeId: { type: string }
+        region: { type: string }
+        status: { $ref: '#/components/schemas/NodeStatus' }
+        version: { type: string }
+        natType: { $ref: '#/components/schemas/NATType' }
+        publicAddr: { type: string, example: '203.0.113.10:4242' }
+        capacity: { type: integer }
+        activeUsers: { type: integer, description: Parallel connected users (live) }
+        loadPct: { type: number, format: float }
+        rttMs: { type: integer }
+        connectedAt: { type: string, format: date-time }
+        lastSeen: { type: string, format: date-time }
+        config: { $ref: '#/components/schemas/DeviceConfigSummary' }
+
+    Session:
+      type: object
+      properties:
+        sessionId: { type: string }
+        userId: { type: string, format: uuid }
+        username: { type: string }
+        nodeId: { type: string }
+        region: { type: string }
+        mode: { type: string, enum: [direct, relay] }
+        state: { type: string, enum: [signaling, punching, active, relaying, closed] }
+        startedAt: { type: string, format: date-time }
+        bytesUp: { type: integer, format: int64 }
+        bytesDown: { type: integer, format: int64 }
+
+    Event:
+      type: object
+      description: One live-feed event. `type` selects the payload field.
+      required: [type, ts]
+      properties:
+        type:
+          type: string
+          enum: [Snapshot, NodeConnected, NodeUpdated, NodeDisconnected, SessionStarted, SessionEnded]
+        ts: { type: string, format: date-time }
+        snapshot:
+          type: object
+          properties:
+            nodes: { type: array, items: { $ref: '#/components/schemas/DeviceView' } }
+            sessions: { type: array, items: { $ref: '#/components/schemas/Session' } }
+        node: { $ref: '#/components/schemas/DeviceView' }
+        nodeId: { type: string }
+        session: { $ref: '#/components/schemas/Session' }
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string, example: not_found }
+        message: { type: string }
+        details: { type: object, additionalProperties: true }

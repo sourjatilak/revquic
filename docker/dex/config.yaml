@@ -1,0 +1,28 @@
+# Dex dev IdP config for the Revquic OIDC end-to-end smoke.
+# Issues ID tokens via the OAuth2 password grant (ROPC) so the smoke can fetch a token non-interactively.
+issuer: http://dex:5556/dex
+
+storage:
+  type: memory
+
+web:
+  http: 0.0.0.0:5556
+
+oauth2:
+  passwordConnector: local   # enable the password grant
+  skipApprovalScreen: true
+
+staticClients:
+  - id: revquic
+    secret: revquic-secret
+    name: Revquic
+    redirectURIs:
+      - http://localhost/callback
+
+enablePasswordDB: true
+staticPasswords:
+  # password = "password"  (bcrypt)
+  - email: "alice@example.com"
+    hash: "$2a$10$qCWvztLOe5Cbwkaes5Bo2.ODxOM9RMno83TPtdDehCHY7a.Us6LdO"
+    username: "alice"
+    userID: "alice-id"

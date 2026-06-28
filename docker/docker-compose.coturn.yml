@@ -1,0 +1,39 @@
+# STUN/TURN via coturn (override). Adds a coturn server and points the exit + client at it with
+# -direct. Config is passed as coturn CLI args (no host-mounted file, so it works in the colima VM).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.coturn.yml up --build \
+#       --abort-on-container-exit --exit-code-from client
+#
+# NOTE: on a single Compose network there is NO NAT between containers, so ICE already succeeds via
+# host candidates — coturn is exercised for config/connectivity but the *fallback* relay only matters
+# across real NATs. Use this as the template for a cross-NAT deployment (place coturn on B's public IP,
+# mint short-lived TURN REST creds instead of the static user below).
+services:
+  coturn:
+    image: coturn/coturn:4.6
+    command: ["-n", "--listening-port=3478", "--realm=revquic", "--lt-cred-mech",
+              "--user=revquic:revquicpass", "--fingerprint", "--no-tls", "--no-dtls",
+              "--min-port=49160", "--max-port=49200", "--no-cli", "--log-file=stdout"]
+    networks: [revquic]
+
+  exit:
+    command: ["-broker", "server:4242", "-nodeId", "exit-1", "-region", "us-west",
+              "-uplink", "eth0", "-token", "node-secret", "-direct",
+              "-stun", "stun:coturn:3478", "-turn", "turn:coturn:3478",
+              "-turn-user", "revquic", "-turn-pass", "revquicpass"]
+    depends_on: [server, coturn]
+
+  client:
+    environment:
+      BROKER: "server:4242"
+      ADMIN: "server:8080"
+      REGION: "us-west"
+      TOKEN: "alice-token"
+      ADMIN_TOKEN: "admin-secret"
+      DIRECT: "1"
+      DIRECT_EXPECT: "1"
+      STUN: "stun:coturn:3478"
+      TURN: "turn:coturn:3478"
+      TURN_USER: "revquic"
+      TURN_PASS: "revquicpass"
+    depends_on: [server, exit, coturn]

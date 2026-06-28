@@ -1,0 +1,22 @@
+# Phase 2 direct-path smoke (override). Run with:
+#   docker compose -f docker-compose.yml -f docker-compose.direct.yml up --build \
+#       --abort-on-container-exit --exit-code-from client
+#
+# On a single Compose network there is no NAT between containers, so ICE connects via HOST
+# candidates (no STUN/TURN needed). The client bootstraps on the relay, then migrates to the direct
+# ICE/QUIC path; smoke.sh asserts the "upgraded to DIRECT" log line in addition to the ping.
+# For cross-NAT testing, add a coturn service and pass -stun/-turn (see docker/README.md).
+services:
+  exit:
+    command: ["-broker", "server:4242", "-nodeId", "exit-1", "-region", "us-west",
+              "-uplink", "eth0", "-token", "node-secret", "-direct"]
+
+  client:
+    environment:
+      BROKER: "server:4242"
+      ADMIN: "server:8080"
+      REGION: "us-west"
+      TOKEN: "alice-token"
+      ADMIN_TOKEN: "admin-secret"
+      DIRECT: "1"
+      DIRECT_EXPECT: "1"

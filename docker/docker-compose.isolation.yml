@@ -1,0 +1,33 @@
+# Tenant isolation smoke: two clients on one exit. client (10.99.0.2) holds its connection; client2
+# (10.99.0.3) verifies it can reach the gateway but NOT the peer client (isolation). The exit enforces
+# isolation by default (-isolate). Run detached + poll:
+#   docker compose -f docker-compose.yml -f docker-compose.isolation.yml up --build -d
+#   docker compose -f docker-compose.yml -f docker-compose.isolation.yml logs --tail=30 client2
+#   docker compose -f docker-compose.yml -f docker-compose.isolation.yml down -v
+services:
+  client:
+    environment:
+      BROKER: "server:4242"
+      ADMIN: "server:8080"
+      REGION: "us-west"
+      TOKEN: "alice-token"
+      ADMIN_TOKEN: "admin-secret"
+      HOLD: "1"
+      HOLD_SECS: "45"
+
+  client2:
+    build:
+      context: ..
+      dockerfile: docker/client/Dockerfile
+    environment:
+      BROKER: "server:4242"
+      ADMIN: "server:8080"
+      REGION: "us-west"
+      TOKEN: "alice-token"
+      ADMIN_TOKEN: "admin-secret"
+      START_DELAY: "8"
+      PEER_IP: "10.99.0.2"
+    cap_add: [NET_ADMIN]
+    devices: ["/dev/net/tun:/dev/net/tun"]
+    depends_on: [server, exit, client]
+    networks: [revquic]

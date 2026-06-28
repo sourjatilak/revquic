@@ -1,0 +1,89 @@
+# Multi-NAT testbed — forces ICE to fall back to the TURN relay.
+#
+# Topology:
+#   net-pub (10.80.0.0/24): server(.10), coturn(.20), nat-a WAN(.2), nat-c WAN(.3)
+#   net-a  (10.81.0.0/24):  client(.10), nat-a LAN(.2)        <- client's default route = .2
+#   net-c  (10.82.0.0/24):  exit(.10),   nat-c LAN(.2)        <- exit's default route   = .2
+#
+# nat-a / nat-c MASQUERADE with --random-fully (symmetric-NAT-like) so UDP hole punching fails and
+# ICE must use coturn TURN relay candidates. The client/exit only reach the public net via their NAT.
+#
+# Run detached and poll (do NOT block):
+#   docker compose -f docker-compose.nat.yml up --build -d
+#   docker compose -f docker-compose.nat.yml logs --tail=40 client coturn exit
+#   docker compose -f docker-compose.nat.yml down -v
+name: revquic-nat
+
+services:
+  server:
+    build: { context: .., dockerfile: docker/server/Dockerfile }
+    command: ["-quic", ":4242", "-http", ":8080", "-admin-token", "admin-secret",
+              "-node-token", "node-secret", "-seed-user", "alice-token:us-west",
+              "-turn-secret", "revquicsecret", "-turn-url", "turn:10.80.0.20:3478", "-stun-url", "stun:10.80.0.20:3478"]
+    networks:
+      pub: { ipv4_address: 10.80.0.10 }
+
+  coturn:
+    image: coturn/coturn:4.6
+    command: ["-n", "--listening-ip=10.80.0.20", "--listening-port=3478",
+              "--relay-ip=10.80.0.20", "--external-ip=10.80.0.20",
+              "--realm=revquic", "--use-auth-secret", "--static-auth-secret=revquicsecret",
+              "--fingerprint", "--no-tls", "--no-dtls",
+              "--min-port=49160", "--max-port=49200", "--no-cli", "--log-file=stdout"]
+    networks:
+      pub: { ipv4_address: 10.80.0.20 }
+
+  nat-a:
+    build: { context: .., dockerfile: docker/nat/Dockerfile }
+    environment: { LAN_SUBNET: "10.81.0.0/24" }
+    cap_add: [NET_ADMIN]
+    sysctls: { net.ipv4.ip_forward: "1" }
+    networks:
+      pub: { ipv4_address: 10.80.0.2 }
+      lana: { ipv4_address: 10.81.0.2 }
+
+  nat-c:
+    build: { context: .., dockerfile: docker/nat/Dockerfile }
+    environment: { LAN_SUBNET: "10.82.0.0/24" }
+    cap_add: [NET_ADMIN]
+    sysctls: { net.ipv4.ip_forward: "1" }
+    networks:
+      pub: { ipv4_address: 10.80.0.3 }
+      lanc: { ipv4_address: 10.82.0.2 }
+
+  exit:
+    build: { context: .., dockerfile: docker/exit/Dockerfile }
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["ip route replace default via 10.82.0.2 && exec revquic-exit -broker 10.80.0.10:4242 -nodeId exit-1 -region us-west -uplink eth0 -token node-secret -direct"]
+    cap_add: [NET_ADMIN]
+    devices: ["/dev/net/tun:/dev/net/tun"]
+    sysctls: { net.ipv4.ip_forward: "1" }
+    depends_on: [server, coturn, nat-c]
+    networks:
+      lanc: { ipv4_address: 10.82.0.10 }
+
+  client:
+    build: { context: .., dockerfile: docker/client/Dockerfile }
+    environment:
+      GW: "10.81.0.2"
+      BROKER: "10.80.0.10:4242"
+      ADMIN: "10.80.0.10:8080"
+      REGION: "us-west"
+      TOKEN: "alice-token"
+      ADMIN_TOKEN: "admin-secret"
+      DIRECT: "1"
+      DIRECT_EXPECT: "1"
+      RELAY_EXPECT: "1"
+    cap_add: [NET_ADMIN]
+    devices: ["/dev/net/tun:/dev/net/tun"]
+    depends_on: [server, coturn, nat-a, exit]
+    networks:
+      lana: { ipv4_address: 10.81.0.10 }
+
+networks:
+  pub:
+    ipam: { config: [{ subnet: 10.80.0.0/24 }] }
+  lana:
+    ipam: { config: [{ subnet: 10.81.0.0/24 }] }
+  lanc:
+    ipam: { config: [{ subnet: 10.82.0.0/24 }] }

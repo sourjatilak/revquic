@@ -1,0 +1,24 @@
+# build output
+/bin/
+# local persistent stores
+*.db
+*.db-shm
+*.db-wal
+users.json
+admins.json
+# generated certs
+/certs/
+docker/certs/
+# node / vite
+web/admin/node_modules/
+web/admin/dist/
+# misc
+*.log
+.DS_Store
+
+# stray top-level binaries
+/revquic-broker
+/revquic-exit
+/revquic-client
+/revquic-certgen
+/dist/

@@ -1,0 +1,38 @@
+# Run ONLY a revquic exit node in Docker, pointed at a REMOTE broker.
+#
+# Ideal for hosting an exit on a Windows (or macOS) machine via Docker Desktop: the container is a
+# real Linux box, so it gets working iptables NAT + per-tenant isolation (unlike native Windows
+# WinNAT). The container egresses through Docker's NAT to the host's internet connection.
+#
+# Usage (from the repo's docker/ directory):
+#   BROKER=broker.example.com:4242 NODE_TOKEN=node-secret REGION=us-west \
+#     docker compose -f docker-compose.exit-remote.yml up -d --build
+#   docker compose -f docker-compose.exit-remote.yml logs -f
+#   docker compose -f docker-compose.exit-remote.yml down
+#
+# If the broker runs on this same host (not in this compose), set BROKER=host.docker.internal:4242.
+#
+# mTLS: drop ca.pem/node-cert.pem/node-key.pem into ./certs, uncomment the volume below, and append
+#   -tls-ca /certs/ca.pem -tls-cert /certs/node-cert.pem -tls-key /certs/node-key.pem -tls-server-name <broker-host>
+# to EXTRA_ARGS. Add -isolate to EXTRA_ARGS for per-tenant isolation.
+
+services:
+  exit:
+    build: { context: .., dockerfile: docker/exit/Dockerfile }
+    restart: unless-stopped
+    environment:
+      BROKER: "${BROKER:-broker.example.com:4242}"
+      REGION: "${REGION:-us-west}"
+      NODE_ID: "${NODE_ID:-exit-docker-1}"
+      NODE_TOKEN: "${NODE_TOKEN:-node-secret}"
+      # Extra flags: -direct enables P2P upgrades; add -isolate and/or the -tls-* flags here.
+      EXTRA_ARGS: "${EXTRA_ARGS:--direct}"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - 'exec revquic-exit -broker "$$BROKER" -nodeId "$$NODE_ID" -region "$$REGION" -uplink eth0 -token "$$NODE_TOKEN" $$EXTRA_ARGS'
+    cap_add: [NET_ADMIN]
+    devices: ["/dev/net/tun:/dev/net/tun"]
+    sysctls: { net.ipv4.ip_forward: "1" }
+    # mTLS: uncomment after creating ./certs (see header).
+    # volumes:
+    #   - ./certs:/certs:ro

@@ -1,0 +1,45 @@
+# Relay-path smoke: broker (server) + exit + client on one Compose network.
+# Run from this directory:  docker compose up --build --abort-on-container-exit
+# The `client` container runs the smoke and exits 0 (PASS) / 1 (FAIL).
+name: revquic-smoke
+
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: docker/server/Dockerfile
+    command: ["-quic", ":4242", "-http", ":8080",
+              "-admin-token", "admin-secret", "-node-token", "node-secret",
+              "-seed-user", "alice-token:us-west"]
+    networks: [revquic]
+
+  exit:
+    build:
+      context: ..
+      dockerfile: docker/exit/Dockerfile
+    command: ["-broker", "server:4242", "-nodeId", "exit-1", "-region", "us-west",
+              "-uplink", "eth0", "-token", "node-secret"]
+    cap_add: [NET_ADMIN]
+    devices: ["/dev/net/tun:/dev/net/tun"]
+    sysctls:
+      net.ipv4.ip_forward: "1"
+    depends_on: [server]
+    networks: [revquic]
+
+  client:
+    build:
+      context: ..
+      dockerfile: docker/client/Dockerfile
+    cap_add: [NET_ADMIN]
+    devices: ["/dev/net/tun:/dev/net/tun"]
+    environment:
+      BROKER: "server:4242"
+      ADMIN: "server:8080"
+      REGION: "us-west"
+      TOKEN: "alice-token"
+      ADMIN_TOKEN: "admin-secret"
+    depends_on: [server, exit]
+    networks: [revquic]
+
+networks:
+  revquic: {}
