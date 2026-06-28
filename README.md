@@ -24,10 +24,6 @@ datagrams (raw IP packets) between them. Sessions begin on the broker‑relayed 
 **upgrade to a direct peer‑to‑peer path** via ICE hole‑punching (with TURN fallback) when the network
 allows — combining the reachability of a relay with the latency and throughput of P2P.
 
-> [!NOTE]
-> **Status:** a working **reference / learning implementation** with an end‑to‑end test suite — **not a
-> security‑audited product**. Replace the demo secrets and add a security review before exposing it to
-> real users.
 
 ## Highlights
 
